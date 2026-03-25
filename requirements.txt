@@ -3,5 +3,6 @@ scikit-learn
 xgboost
 mlflow
 imblearn
+dill
 
 -e .

@@ -5,6 +5,7 @@ from src.exception import CustomException
 from src.logger import logging
 from dataclasses import dataclass
 from sklearn.model_selection import TimeSeriesSplit
+from src.componenets.data_transformation import DataTransformation,DataTransformationConfig
 
 @dataclass
 class DataIngestionConfig:
@@ -27,7 +28,7 @@ class DataIngestion:
             logging.info('spliting train and test data')
 
             df = df.sort_values('InvoiceDate').reset_index(drop=True)
-            
+
             test_size = int(len(df) * 0.2)
             train_df = df.iloc[:-test_size]
             test_df = df.iloc[-test_size:]
@@ -46,6 +47,10 @@ class DataIngestion:
 
 if __name__ == "__main__":
     obj = DataIngestion()
-    obj.initiate_data_ingestion()
+    train_data,test_data = obj.initiate_data_ingestion()
+
+    data_transformation = DataTransformation()
+    data_transformation.initiate_data_transformation(train_data,test_data)
+
         
 
