@@ -6,6 +6,7 @@ from src.logger import logging
 from dataclasses import dataclass
 from sklearn.model_selection import TimeSeriesSplit
 from src.componenets.data_transformation import DataTransformation,DataTransformationConfig
+from src.componenets.model_trainer import ModelTrainer,ModelTrainerConfig
 
 @dataclass
 class DataIngestionConfig:
@@ -50,7 +51,10 @@ if __name__ == "__main__":
     train_data,test_data = obj.initiate_data_ingestion()
 
     data_transformation = DataTransformation()
-    data_transformation.initiate_data_transformation(train_data,test_data)
+    train_arr,test_arr,_ = data_transformation.initiate_data_transformation(train_data,test_data)
+
+    model_trainer = ModelTrainer()
+    print(model_trainer.train_and_evaluate(train_arr=train_arr,test_arr=test_arr))
 
         
 

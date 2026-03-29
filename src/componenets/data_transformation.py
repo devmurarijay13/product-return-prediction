@@ -27,18 +27,28 @@ class DataTransformation:
     def get_static_features(self,df):
         try:
             df['InvoiceDate'] = pd.to_datetime(df['InvoiceDate'])
-            df = df.sort_values('InvoiceDate').reset_index(drop=True)
-            df['is_return'] = ((df['Invoice'].str.startswith('C')) | (df['Quantity'] < 0)).astype(int)
+            
+            # 1. Identify Return Invoices (The Labels)
+            # A 'C' invoice means the original purchase was returned.
+            df['is_return'] = ((df['Invoice'].str.startswith('C', na=False)) | (df['Quantity'] < 0)).astype(int)
 
+            # 2. Convert values to absolute to remove the "Negative Sign" cheat
+            df['Quantity'] = df['Quantity'].abs()
+            df['Price'] = df['Price'].abs()
+            df['order_value'] = df['Price'] * df['Quantity']
+            df['order_value'] = df['order_value'].abs()
+
+            # 3. CRITICAL: Remove the actual return rows ('C' invoices) from the features
+            # We want the model to learn from the original PURCHASE, not the RETURN row.
             df = df[df['Price'] > 0]
-
-            df['order_value'] = df['Price']*df['Quantity']
+            df = df[df['Quantity'] > 0]
 
             df['month'] = df['InvoiceDate'].dt.month
             df['hour'] = df['InvoiceDate'].dt.hour
             df['day_of_week'] = df['InvoiceDate'].dt.dayofweek
-            df['is_weekend'] = df['day_of_week'].isin([5,6]).astype(int)
-            df.dropna(subset=['Customer ID'],inplace=True)
+            df['is_weekend'] = df['day_of_week'].isin([5, 6]).astype(int)
+            
+            df.dropna(subset=['Customer ID'], inplace=True)
 
             return df
 
@@ -47,9 +57,25 @@ class DataTransformation:
 
     def get_business_impact_features(self,train_df,test_df):
 
-        crr = train_df.groupby('Customer ID')['is_return'].mean()
-        train_df['cust_return_rate'] = train_df['Customer ID'].map(crr)
-        test_df['cust_return_rate'] = test_df['Customer ID'].map(crr)
+       # 1. Calculate Global Mean (to fill for new customers)
+        global_mean = train_df['is_return'].mean()
+
+        # 2. Use a "Leave-One-Out" style calculation for Training
+        # We subtract the current row's effect so the model can't cheat
+        cust_stats = train_df.groupby('Customer ID')['is_return'].agg(['sum', 'count'])
+        
+        # Mapping back to train
+        train_df = train_df.merge(cust_stats, on='Customer ID', how='left')
+        
+        # The trick: (Total Returns - Current Return) / (Total Orders - 1)
+        train_df['cust_return_rate'] = (train_df['sum'] - train_df['is_return']) / (train_df['count'] - 1)
+        train_df['cust_return_rate'].fillna(global_mean, inplace=True) # Handle customers with 1 order
+        
+        # 3. For Test set, use the raw mean from Train (this is okay because it's "Past Data")
+        test_df['cust_return_rate'] = test_df['Customer ID'].map(train_df.groupby('Customer ID')['is_return'].mean()).fillna(global_mean)
+
+        # Drop the helper sum/count columns before returning
+        train_df.drop(columns=['sum', 'count'], inplace=True)
 
         train_mean = train_df['is_return'].mean()
 
@@ -114,9 +140,27 @@ class DataTransformation:
         return_invoices = train_df[train_df['is_return'] == 1].groupby('Customer ID')['Invoice'].nunique()
         cust_return_ratio = (return_invoices / invoices).fillna(0).to_dict()
 
-        train_df['return_ratio'] = train_df['Customer ID'].map(cust_return_ratio)
-        test_df['return_ratio'] = test_df['Customer ID'].map(cust_return_ratio)
-        test_df['return_ratio'].fillna(return_invoices.sum() / invoices.sum(),inplace=True)
+        total_invoices = train_df.groupby('Customer ID')['Invoice'].nunique()
+        
+        # Calculate how many UNIQUE invoices were returns for each customer
+        # (Where is_return == 1)
+        return_invoices_count = train_df[train_df['is_return'] == 1].groupby('Customer ID')['Invoice'].nunique()
+        # 2. Map these totals back to the training dataframe
+        train_df['total_inv_count'] = train_df['Customer ID'].map(total_invoices)
+        train_df['ret_inv_count'] = train_df['Customer ID'].map(return_invoices_count).fillna(0)
+        # 3. APPLY THE FIX: Subtract the current invoice's contribution
+        # If the current row's invoice is a return, we subtract 1 from the numerator AND denominator
+        # Logic: (Total Return Invoices - Is Current Invoice a Return?) / (Total Invoices - 1)
+        train_df['return_ratio'] = (train_df['ret_inv_count'] - train_df['is_return']) / (train_df['total_inv_count'] - 1)
+        # Handle cases where a customer only has 1 invoice (division by zero)
+        global_ratio = return_invoices_count.sum() / total_invoices.sum()
+        train_df['return_ratio'] = train_df['return_ratio'].replace([np.inf, -np.inf], np.nan).fillna(global_ratio)
+        # 4. FOR TEST SET: Use the final historical ratio from the Train set
+        # This is safe because the test set is "Future" data
+        final_ratio_map = (return_invoices_count / total_invoices).fillna(0).to_dict()
+        test_df['return_ratio'] = test_df['Customer ID'].map(final_ratio_map).fillna(global_ratio)
+        # 5. Cleanup helper columns
+        train_df.drop(columns=['total_inv_count', 'ret_inv_count'], inplace=True)
 
         train_df['item_per_order_ratio'] = train_df['unique_items'] / train_df['avg_order_value']
         test_df['item_per_order_ratio'] = test_df['unique_items'] / test_df['avg_order_value']
@@ -127,7 +171,9 @@ class DataTransformation:
         train_df['order_in_same_hour'] = train_df.groupby(['Customer ID','InvoiceDate'])['Invoice'].transform('count')
         test_df['order_in_same_hour'] = test_df.groupby(['Customer ID','InvoiceDate'])['Invoice'].transform('count')
 
-        cols_to_drop = ['Invoice','StockCode','Description','InvoiceDate','Customer ID']
+        cols_to_drop = [
+                'Invoice','StockCode','Description','InvoiceDate','Customer ID'
+            ]
 
         train_df.drop(columns=cols_to_drop,inplace=True)
         test_df.drop(columns=cols_to_drop,inplace=True)
@@ -161,7 +207,7 @@ class DataTransformation:
                     ('categorical_pipeline',cat_pipeline,cat_col),
                     ('numerical_pipeline',num_pipeline,num_cols)
                 ],
-                remainder='passthrough'
+                remainder='drop'
             )
             logging.info('preprocessing pipeline completed')
 
@@ -173,8 +219,8 @@ class DataTransformation:
     def resampling(self):
 
         pipeline = Pipeline([
-            ('adasyn',ADASYN(sampling_strategy='minority',random_state=42,n_neighbors=5)),
-            ('under_sampler',RandomUnderSampler(sampling_strategy='majority'))
+            ('adasyn',ADASYN(sampling_strategy='minority',random_state=42,n_neighbors=3)),
+            ('under_sampler',RandomUnderSampler(sampling_strategy='majority',random_state=42))
         ])
 
         logging.info('resampling pipeline created')
