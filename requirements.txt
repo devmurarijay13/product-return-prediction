@@ -6,5 +6,8 @@ imblearn
 dill
 lightgbm
 optuna
+pydantic
+uvicorn
+
 
 -e .
