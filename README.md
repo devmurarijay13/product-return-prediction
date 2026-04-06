@@ -60,7 +60,7 @@ Models frequently crash in production when the API encounters a new customer, a 
 
 ## 🏗️ Project Architecture & ML Lifecycle
 
-The repository is modularized using modern MLOps principles, separating concerns across data ingestion, transformation, training, and deployment:
+The repository is modularized using modern ML principles, separating concerns across data ingestion, transformation, training, and deployment:
 
 ```text
 product-return-prediction/
